@@ -16,7 +16,9 @@ public class DemoChatApp {
         System.out.println("  /link                     - send LINK (broadcast) and update users list");
         System.out.println("  /users                    - show known users");
         System.out.println("  /all <text>               - broadcast message");
-        System.out.println("  /to <addr> <text>         - private message to address");
+        System.out.println("  /to <nick> <text>         - private message to nickname");
+        System.out.println("  /sendfile <nick> <path>   - send file to nickname");
+        System.out.println("  /downloaddir <path>       - set download directory (default: ./downloads/)");
         System.out.println("  /history show             - show history");
         System.out.println("  /history clear            - clear history");
         System.out.println("  /history save <filePath>  - save history to file");
@@ -97,6 +99,43 @@ public class DemoChatApp {
 
         dll.start();
 
+        // ========== СОЗДАЁМ ПРИКЛАДНОЙ УРОВЕНЬ ==========
+        ChatApplicationLayer appLayer = new ChatApplicationLayer(dll, nick);
+        appLayer.start();
+        
+        // Поток для обработки входящих сообщений из очереди
+        Thread receiverThread = new Thread(() -> {
+            while (true) {
+                try {
+                    AppMessage msg = appLayer.incomingQueue.take();
+                    String line = now() + " " + msg.fromNick + "> " + msg.text;
+                    history.add(line);
+                    System.out.print("\n" + line + "\n> ");
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        receiverThread.setDaemon(true);
+        receiverThread.start();
+        
+        // Поток для обработки системных сообщений
+        Thread systemThread = new Thread(() -> {
+            while (true) {
+                try {
+                    SystemPacket pkt = appLayer.systemQueue.take();
+                    String line = now() + " [SYS] " + pkt.info;
+                    history.add(line);
+                    System.out.print("\n" + line + "\n> ");
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        systemThread.setDaemon(true);
+        systemThread.start();
+        // ================================================
+
         System.out.println();
         System.out.println("Connected as " + nick + " (addr=" + myAddr + ") on " + portName);
         System.out.println("------------------------------------------------------");
@@ -126,6 +165,32 @@ public class DemoChatApp {
 
             if (line.equalsIgnoreCase("/disconnect")) {
                 dll.sendUplink();
+                continue;
+            }
+
+            // ========== НОВАЯ КОМАНДА: установка папки загрузок ==========
+            if (line.startsWith("/downloaddir ")) {
+                String dir = line.substring(13).trim();
+                appLayer.setDownloadDirectory(dir);
+                System.out.println("Download directory set to: " + dir);
+                continue;
+            }
+
+            // ========== НОВАЯ КОМАНДА: отправка файла ==========
+            if (line.startsWith("/sendfile ")) {
+                String[] parts = line.split("\\s+", 3);
+                if (parts.length < 3) {
+                    System.out.println("Usage: /sendfile <nick> <filepath>");
+                    continue;
+                }
+                String toNick = parts[1];
+                String filePath = parts[2];
+                
+                try {
+                    appLayer.sendFile(toNick, filePath);
+                } catch (Exception e) {
+                    System.out.println("Error sending file: " + e.getMessage());
+                }
                 continue;
             }
 
@@ -166,43 +231,42 @@ public class DemoChatApp {
 
             if (line.startsWith("/all ")) {
                 String text = line.substring(5);
-                // дублируем в своём окне (как в методичке)
                 String self = now() + " " + nick + " (" + myAddr + ")> " + text;
                 history.add(self);
                 System.out.println(self);
-
-                dll.sendChatBroadcast(text);
+                // Используем прикладной уровень вместо прямого вызова DLL
+                appLayer.sendBroadcast(text);
                 continue;
             }
 
+            // ========== ИЗМЕНЕНО: /to теперь по нику, а не по адресу ==========
             if (line.startsWith("/to ")) {
                 String[] parts = line.split("\\s+", 3);
                 if (parts.length < 3) {
-                    System.out.println("Usage: /to <addr> <text>");
+                    System.out.println("Usage: /to <nick> <text>");
                     continue;
                 }
-                int dst = Integer.parseInt(parts[1]);
+                String toNick = parts[1];
                 String text = parts[2];
 
-                // дублируем в своём окне (как в методичке)
-                String self = now() + " " + nick + " (" + myAddr + ") [to " + dst + "]> " + text;
+                String self = now() + " " + nick + " (" + myAddr + ") [to " + toNick + "]> " + text;
                 history.add(self);
                 System.out.println(self);
 
-                dll.sendChatTo(dst, text);
+                appLayer.sendToNick(toNick, text);
                 continue;
             }
 
-            // по умолчанию — broadcast (и дублируем)
+            // по умолчанию — broadcast
             if (!line.isBlank()) {
                 String self = now() + " " + nick + " (" + myAddr + ")> " + line;
                 history.add(self);
                 System.out.println(self);
-
-                dll.sendChatBroadcast(line);
+                appLayer.sendBroadcast(line);
             }
         }
 
+        appLayer.stop();
         dll.stop();
         phy.close();
         System.out.println("Bye.");
