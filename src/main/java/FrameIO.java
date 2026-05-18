@@ -5,7 +5,7 @@ import java.io.OutputStream;
 
 public class FrameIO {
     // ИСПРАВЛЕНО: правильные значения по стандарту HDLC
-    public static final int FLAG = 0x7E;        // 126 - start/stop флаг
+    public static final int FLAG = 0xFF;        // 126 - start/stop флаг
     public static final int BROADCAST = 0x7F;   // 127 - широковещательный адрес
     public static final int ESC = 0x7D;         // 125 - escape символ
 
