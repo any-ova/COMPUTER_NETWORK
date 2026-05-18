@@ -120,14 +120,28 @@ public class DataLinkLayer {
     private void handleFrame(Frame f) throws IOException {
         switch (f.type) {
             case FrameIO.TYPE_I -> {
-                String from = users.getOrDefault(f.src, "addr:" + f.src);
                 String text = new String(f.data, StandardCharsets.UTF_8);
 
-                if (cb != null) cb.onChat(from, f.src, text);
+                // ========== ПАРСИМ APPMESSAGE ==========
+                String[] parts = text.split(String.valueOf((char)0x1F), 3);
+                String toNick = (parts.length > 0) ? parts[0] : "*";
+                String fromNick = (parts.length > 1) ? parts[1] : users.getOrDefault(f.src, "addr:" + f.src);
+                String messageText = (parts.length > 2) ? parts[2] : "";
 
-                if (f.dst != Frame.BROADCAST) {
+                // ========== ТОЛЬКО ЕСЛИ ДЛЯ НАС ИЛИ BROADCAST ==========
+                if (toNick.equals("*") || toNick.isEmpty()) {
+                    // Это broadcast или сообщение для всех
+                    if (cb != null) cb.onChat(fromNick, f.src, messageText);
+
+                    if (f.dst != Frame.BROADCAST) {
+                        FrameIO.writeFrame(out, f.src, myAddr, FrameIO.TYPE_ACK, null);
+                    }
+                } else if (toNick.equalsIgnoreCase(myNick)) {
+                    // Это приватное сообщение для нас
+                    if (cb != null) cb.onChat(fromNick, f.src, messageText);
                     FrameIO.writeFrame(out, f.src, myAddr, FrameIO.TYPE_ACK, null);
                 }
+                // Если сообщение не для нас — игнорируем
             }
             case FrameIO.TYPE_LINK -> {
                 parseUsers(f.data);

@@ -41,7 +41,14 @@ public class SerialPhysicalLayer {
         if (!port.openPort()) {
             throw new IOException("Cannot open port: " + cfg.portName);
         }
-        System.out.printf(
+
+        // === ОЧИЩАЕМ БУФЕРЫ ===
+        try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+        port.getInputStream().skip(port.getInputStream().available());
+
+        System.err.println("[PHY] Serial port buffers cleared");
+
+        System.err.printf(
                 "[PHY] Opened %s: baud=%d dataBits=%d stopBits=%d parity=%s flow=%s%n",
                 cfg.portName,
                 cfg.baudRate,

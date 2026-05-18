@@ -134,6 +134,7 @@ public class DemoChatApp {
                 new DataLinkLayer.Callbacks() {
                     @Override
                     public void onChat(String fromName, int fromAddr, String text) {
+                        // text теперь уже это только сообщение, без AppMessage кодирования
                         String line = now() + " " + fromName + " (" + fromAddr + ")> " + text;
                         history.add(line);
                         System.out.print("\n" + line + "\n> ");
@@ -167,11 +168,12 @@ public class DemoChatApp {
                 }
         );
 
-        dll.start();
 
         // ========== СОЗДАЁМ ПРИКЛАДНОЙ УРОВЕНЬ ==========
         ChatApplicationLayer appLayer = new ChatApplicationLayer(dll, nick);
         appLayerRef[0] = appLayer;  // сохраняем ссылку для колбэка
+        dll.start();
+
         appLayer.start();
 
         // Поток для обработки входящих сообщений из очереди

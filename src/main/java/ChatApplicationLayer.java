@@ -40,6 +40,7 @@ public class ChatApplicationLayer {
     public ChatApplicationLayer(DataLinkLayer dll, String myNick) {
         this.dll = dll;
         this.myNick = myNick;
+        this.users = new ConcurrentHashMap<>();
         new File(downloadDirectory).mkdirs();
     }
 
@@ -189,12 +190,16 @@ public class ChatApplicationLayer {
             return;
         }
 
-        try {
-            AppMessage m = AppCodec.decode(text.getBytes(StandardCharsets.UTF_8));
-            incomingQueue.offer(m);
-        } catch (Exception e) {
-            incomingQueue.offer(new AppMessage("*", fromName, text));
-        }
+        // text содержит: toNick + SEP + fromNick + SEP + messageText
+        // Парсим вручную, не полагаясь на AppCodec
+        String[] parts = text.split(String.valueOf((char)0x1F), 3);
+
+        String toNick = (parts.length > 0) ? parts[0] : "*";
+        String senderNick = (parts.length > 1) ? parts[1] : fromName;
+        String messageText = (parts.length > 2) ? parts[2] : "";
+
+        AppMessage m = new AppMessage(toNick, senderNick, messageText);
+        incomingQueue.offer(m);
     }
 
     public void onSystemText(String s) {
@@ -207,17 +212,25 @@ public class ChatApplicationLayer {
         while (running) {
             try {
                 AppMessage m = outgoingQueue.take();
+                System.err.println("[APP-TX] AppMessage: to='" + m.toNick + "' from='" + m.fromNick + "' text='" + m.text + "'");
+
                 byte[] bytes = AppCodec.encode(m);
+                System.err.println("[APP-TX] Encoded bytes len=" + bytes.length + " content=" +
+                        new String(bytes, StandardCharsets.UTF_8).replace('\n', '|').replace((char)0x1F, '§'));
+
                 String data = new String(bytes, StandardCharsets.UTF_8);
 
                 if (m.toNick.equals("*")) {
+                    System.err.println("[APP-TX] Broadcasting via DLL");
                     dll.sendChatBroadcast(data);
                 } else {
                     Integer addr = findAddrByNick(m.toNick);
                     if (addr == null) {
+                        System.err.println("[APP-TX] ERROR: Unknown user " + m.toNick);
                         systemQueue.offer(new SystemPacket(SystemEventId.NO_ACK, "Unknown user: " + m.toNick));
                         continue;
                     }
+                    System.err.println("[APP-TX] Sending to " + m.toNick + " (addr=" + addr + ")");
                     dll.sendChatTo(addr, data);
                 }
             } catch (InterruptedException ie) {
