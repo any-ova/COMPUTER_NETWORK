@@ -27,7 +27,6 @@ public class DataLinkLayer {
     private volatile boolean running;
     private Thread rxThread;
 
-    // “��оследний отправленный кадр” (для RET по методичке)
     private volatile LastSent lastSent;
 
     private static class LastSent {
@@ -62,11 +61,7 @@ public class DataLinkLayer {
         try { if (rxThread != null) rxThread.join(400); } catch (InterruptedException ignored) {}
     }
 
-    // --- API (что вызывает приложение) ---
-
     public void sendLink() throws IOException {
-        // LINK data: список пользователей "addr=nick\n..."
-        // Для 2 ПК достаточно послать себя, но можно и весь users
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<Integer, String> e : users.entrySet()) {
             sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
@@ -95,26 +90,20 @@ public class DataLinkLayer {
     private void sendChat(int dstAddr, String text) throws IOException {
         byte[] raw = text.getBytes(StandardCharsets.UTF_8);
         FrameIO.writeFrame(out, dstAddr, myAddr, FrameIO.TYPE_I, raw);
-
-        // “последний кадр” для RET
         lastSent = new LastSent(dstAddr, myAddr, FrameIO.TYPE_I, raw);
-
-        // По методичке ACK/RET без данных — подтверждаем “тестовое сообщение”.
-        // Для 2 ПК: если dst не broadcast, ожидается ACK/RET со стороны получателя.
         sys("I sent to " + dstAddr + (dstAddr == Frame.BROADCAST ? " (broadcast)" : ""));
     }
-
-    // --- RX loop ---
 
     private void rxLoop() {
         while (running) {
             try {
                 Frame f = FrameIO.readFrame(in);
 
+                // === ИСПРАВЛЕНИЕ: пропускаем null-кадры ===
+                if (f == null) continue;
+
                 boolean forMe = (f.dst == myAddr);
                 boolean broadcast = (f.dst == Frame.BROADCAST);
-
-                // В point-to-point 2 ПК ретрансляции нет.
 
                 if (forMe || broadcast) {
                     handleFrame(f);
@@ -136,27 +125,20 @@ public class DataLinkLayer {
 
                 if (cb != null) cb.onChat(from, f.src, text);
 
-                // ACK только если это unicast (по методичке: получатель не должен быть broadcast)
                 if (f.dst != Frame.BROADCAST) {
                     FrameIO.writeFrame(out, f.src, myAddr, FrameIO.TYPE_ACK, null);
                 }
             }
             case FrameIO.TYPE_LINK -> {
-                // data: "addr=nick\n..."
                 parseUsers(f.data);
                 if (cb != null) cb.onUsers(users);
                 sys("LINK received from " + f.src);
-
-                // можно ответить своим LINK, чтобы синхронизировать таблицы
-                // (для 2 ПК удобно):
-                // sendLink();
             }
             case FrameIO.TYPE_UPLINK -> {
                 sys("UPLINK received. Disconnect.");
                 if (cb != null) cb.onDisconnected();
             }
             case FrameIO.TYPE_ACK -> {
-                // по методичке без данных: считаем что "последний I доставлен"
                 sys("ACK received from " + f.src);
             }
             case FrameIO.TYPE_RET -> {
@@ -190,7 +172,6 @@ public class DataLinkLayer {
                 }
             } catch (Exception ignored) {}
         }
-        // всегда держим себя
         users.put(myAddr, myNick);
     }
 

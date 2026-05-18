@@ -6,11 +6,11 @@ import java.util.*;
 public class DemoChatApp {
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    
+
     // Сохранённые настройки
     private static Properties config = new Properties();
     private static File configFile = new File("config.properties");
-    
+
     // Выбранный файл для отправки
     private static String selectedFilePath = null;
 
@@ -38,7 +38,7 @@ public class DemoChatApp {
         System.out.println("  /exit                     - quit app");
         System.out.println("Any text without command is sent as broadcast.");
     }
-    
+
     // Загрузка сохранённых настроек
     private static void loadConfig() {
         if (configFile.exists()) {
@@ -49,7 +49,7 @@ public class DemoChatApp {
             }
         }
     }
-    
+
     // Сохранение настроек
     private static void saveConfig() {
         try (FileOutputStream fos = new FileOutputStream(configFile)) {
@@ -61,16 +61,16 @@ public class DemoChatApp {
 
     public static void main(String[] args) throws Exception {
         Scanner sc = new Scanner(System.in);
-        
+
         // Загружаем сохранённые настройки
         loadConfig();
-        
+
         // Показываем доступные порты
         System.out.println("Available ports:");
         String[] ports = SerialPhysicalLayer.listPorts();
         if (ports.length == 0) System.out.println(" (none)");
         for (String p : ports) System.out.println(" - " + p);
-        
+
         // Используем сохранённый порт если есть
         String defaultPort = config.getProperty("port", "");
         String portName;
@@ -104,23 +104,27 @@ public class DemoChatApp {
         String savedBaud = config.getProperty("baud", "9600");
         String savedDataBits = config.getProperty("dataBits", "8");
         String savedParity = config.getProperty("parity", "NONE");
-        
+
         SerialConfig serialConfig = new SerialConfig(
-            portName,
-            Integer.parseInt(savedBaud),
-            Integer.parseInt(savedDataBits),
-            1,
-            savedParity.equals("EVEN") ? SerialPhysicalLayer.PARITY_EVEN : 
-                (savedParity.equals("ODD") ? SerialPhysicalLayer.PARITY_ODD : SerialPhysicalLayer.PARITY_NONE),
-            SerialPhysicalLayer.FLOW_NONE,
-            true,
-            true
+                portName,
+                Integer.parseInt(savedBaud),
+                Integer.parseInt(savedDataBits),
+                1,
+                savedParity.equals("EVEN") ? SerialPhysicalLayer.PARITY_EVEN :
+                        (savedParity.equals("ODD") ? SerialPhysicalLayer.PARITY_ODD : SerialPhysicalLayer.PARITY_NONE),
+                SerialPhysicalLayer.FLOW_NONE,
+                true,
+                true
         );
-        
+
         SerialPhysicalLayer phy = new SerialPhysicalLayer(serialConfig);
         phy.open();
 
         final Map<Integer, String>[] usersRef = new Map[]{new HashMap<>()};
+
+        // ========== СОЗДАЁМ ПРИКЛАДНОЙ УРОВЕНЬ ПОЗЖЕ, ПОСЛЕ DLL ==========
+        // Сначала создадим переменную, потом заполним
+        final ChatApplicationLayer[] appLayerRef = new ChatApplicationLayer[1];
 
         DataLinkLayer dll = new DataLinkLayer(
                 phy.getInputStream(),
@@ -145,6 +149,10 @@ public class DemoChatApp {
                     @Override
                     public void onUsers(Map<Integer, String> users) {
                         usersRef[0] = new HashMap<>(users);
+                        // ========== ВАЖНО: обновляем список пользователей в прикладном уровне ==========
+                        if (appLayerRef[0] != null) {
+                            appLayerRef[0].updateUsers(usersRef[0]);
+                        }
                         String line = now() + " SYSTEM> USERS UPDATED: " + usersRef[0];
                         history.add(line);
                         System.out.print("\n" + line + "\n> ");
@@ -163,8 +171,9 @@ public class DemoChatApp {
 
         // ========== СОЗДАЁМ ПРИКЛАДНОЙ УРОВЕНЬ ==========
         ChatApplicationLayer appLayer = new ChatApplicationLayer(dll, nick);
+        appLayerRef[0] = appLayer;  // сохраняем ссылку для колбэка
         appLayer.start();
-        
+
         // Поток для обработки входящих сообщений из очереди
         Thread receiverThread = new Thread(() -> {
             while (true) {
@@ -180,7 +189,7 @@ public class DemoChatApp {
         });
         receiverThread.setDaemon(true);
         receiverThread.start();
-        
+
         // Поток для обработки системных сообщений
         Thread systemThread = new Thread(() -> {
             while (true) {
@@ -233,7 +242,7 @@ public class DemoChatApp {
                 dll.sendUplink();
                 continue;
             }
-            
+
             // ========== КОМАНДА: смена COM-порта ==========
             if (line.startsWith("/setport ")) {
                 String newPort = line.substring(9).trim();
@@ -242,7 +251,7 @@ public class DemoChatApp {
                 System.out.println("COM port changed to " + newPort + ". Please restart the application.");
                 continue;
             }
-            
+
             // ========== КОМАНДА: настройка параметров порта ==========
             if (line.startsWith("/setparams ")) {
                 String[] parts = line.split("\\s+");
@@ -251,12 +260,12 @@ public class DemoChatApp {
                         int baud = Integer.parseInt(parts[1]);
                         int dataBits = Integer.parseInt(parts[2]);
                         String parityStr = parts[3].toUpperCase();
-                        
+
                         config.setProperty("baud", String.valueOf(baud));
                         config.setProperty("dataBits", String.valueOf(dataBits));
                         config.setProperty("parity", parityStr);
                         saveConfig();
-                        
+
                         System.out.println("Settings saved. Restart to apply: " + baud + " " + dataBits + " " + parityStr);
                     } catch (NumberFormatException e) {
                         System.out.println("Invalid parameters. Usage: /setparams <baud> <bits> <NONE/EVEN/ODD>");
@@ -266,7 +275,7 @@ public class DemoChatApp {
                 }
                 continue;
             }
-            
+
             // ========== КОМАНДА: список файлов в директории ==========
             if (line.equalsIgnoreCase("/ls")) {
                 File folder = new File(".");
@@ -286,7 +295,7 @@ public class DemoChatApp {
                 }
                 continue;
             }
-            
+
             // ========== КОМАНДА: выбор файла по номеру ==========
             if (line.startsWith("/select ")) {
                 String numStr = line.substring(8).trim();
@@ -315,7 +324,7 @@ public class DemoChatApp {
                 }
                 continue;
             }
-            
+
             // ========== КОМАНДА: отправить выбранный файл ==========
             if (line.startsWith("/sendselected ")) {
                 String[] parts = line.split("\\s+", 2);
@@ -324,12 +333,12 @@ public class DemoChatApp {
                     continue;
                 }
                 String toNick = parts[1];
-                
+
                 if (selectedFilePath == null) {
                     System.out.println("No file selected. Use /ls and /select <number> first.");
                     continue;
                 }
-                
+
                 try {
                     appLayer.sendFile(toNick, selectedFilePath);
                 } catch (Exception e) {
@@ -355,7 +364,7 @@ public class DemoChatApp {
                 }
                 String toNick = parts[1];
                 String filePath = parts[2];
-                
+
                 try {
                     appLayer.sendFile(toNick, filePath);
                 } catch (Exception e) {

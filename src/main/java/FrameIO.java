@@ -15,7 +15,7 @@ public class FrameIO {
     public static final int TYPE_ACK    = 0x04;
     public static final int TYPE_RET    = 0x05;
 
-    /** Записать кадр. rawData ис��ользуется только для I и LINK. */
+    /** Записать кадр. rawData используется только для I и LINK. */
     public static void writeFrame(OutputStream out, int dst, int src, int type, byte[] rawData) throws IOException {
         out.write(FLAG);
         out.write(dst & 0xFF);
@@ -38,6 +38,13 @@ public class FrameIO {
             // поле "Данные" (в методичке) мы передаём как stuffed(coded(rawData))
             out.write(stuffed);
         }
+
+        out.flush();
+
+        // НЕБОЛЬШАЯ ЗАДЕРЖКА ПЕРЕД ФИНАЛЬНЫМ FLAG — КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+        try {
+            Thread.sleep(2);
+        } catch (InterruptedException ignored) {}
 
         out.write(FLAG);
         out.flush();
@@ -74,7 +81,19 @@ public class FrameIO {
         byte[] coded = unstuff(stuffed);
 
         // 6) decode [7,4] обратно в raw bytes (длина известна = rawLen)
-        byte[] raw = Code74.decode(coded, rawLen);
+        byte[] raw;
+        try {
+            raw = Code74.decode(coded, rawLen);
+        } catch (IOException e) {
+            // Если декодирование не удалось — возвращаем пустой кадр (без падения связи)
+            System.err.println("Code74 decode error: " + e.getMessage());
+            raw = new byte[0];
+        }
+
+        // Защита от пустых кадров
+        if (raw == null || raw.length == 0) {
+            return null;
+        }
 
         return new Frame(dst, src, type, raw);
     }
@@ -105,7 +124,7 @@ public class FrameIO {
     // --- stuffing только внутри data ---
 
     private static byte[] stuff(byte[] data) {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream(data.length);
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(data.length * 2);
         for (byte bb : data) {
             int x = bb & 0xFF;
             if (x == FLAG || x == ESC) {
@@ -123,10 +142,16 @@ public class FrameIO {
         for (int i = 0; i < stuffed.length; i++) {
             int x = stuffed[i] & 0xFF;
             if (x == ESC) {
-                if (i + 1 >= stuffed.length) throw new IOException("Bad ESC at end");
+                if (i + 1 >= stuffed.length) {
+                    break;
+                }
                 int y = stuffed[++i] & 0xFF;
-                if (y != FLAG && y != ESC) throw new IOException("Bad ESC seq");
-                bos.write(y);
+                if (y != FLAG && y != ESC) {
+                    bos.write(x);
+                    bos.write(y);
+                } else {
+                    bos.write(y);
+                }
             } else {
                 bos.write(x);
             }

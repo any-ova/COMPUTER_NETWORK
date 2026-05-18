@@ -19,28 +19,27 @@ public class ChatApplicationLayer {
     private Thread txThread;
     private volatile Map<Integer, String> users;
 
-    // ========== ДОБАВЛЕНО ДЛЯ ПЕРЕДАЧИ ФАЙЛОВ ==========
+    // ========== ДЛЯ ПЕРЕДАЧИ ФАЙЛОВ ==========
     private String downloadDirectory = "./downloads/";
     private final Map<String, FileReceiveState> activeDownloads = new ConcurrentHashMap<>();
-    
+
     private static class FileReceiveState {
         String fileName;
         FileOutputStream fileStream;
         int expectedBlocks;
         int receivedBlocks;
-        
+
         FileReceiveState(String fileName, int expectedBlocks) {
             this.fileName = fileName;
             this.expectedBlocks = expectedBlocks;
             this.receivedBlocks = 0;
         }
     }
-    // ===================================================
+    // ==========================================
 
     public ChatApplicationLayer(DataLinkLayer dll, String myNick) {
         this.dll = dll;
         this.myNick = myNick;
-        // Создаём папку для загрузок, если её нет
         new File(downloadDirectory).mkdirs();
     }
 
@@ -60,125 +59,111 @@ public class ChatApplicationLayer {
         systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT, "Application layer stopped"));
     }
 
-    // ========== ДОБАВЛЕНО: Управление папкой загрузок ==========
     public void setDownloadDirectory(String dir) {
         this.downloadDirectory = dir;
         new File(dir).mkdirs();
         systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "Download directory set to: " + dir));
     }
-    
+
     public String getDownloadDirectory() {
         return downloadDirectory;
     }
-    // ========================================================
 
-    // ========== ДОБАВЛЕНО: Отправка файла ==========
+    // ========== ОТПРАВКА ФАЙЛА ==========
     public void sendFile(String toNick, String filePath) throws IOException, InterruptedException {
         File file = new File(filePath);
         if (!file.exists() || !file.isFile()) {
             systemQueue.offer(new SystemPacket(SystemEventId.NO_ACK, "File not found: " + filePath));
             return;
         }
-        
+
         String fileName = file.getName();
         long fileSize = file.length();
-        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, 
-            "Sending file: " + fileName + " (" + fileSize + " bytes) to " + toNick));
-        
-        // Читаем весь файл
+        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
+                "Sending file: " + fileName + " (" + fileSize + " bytes) to " + toNick));
+
         byte[] fileData = new byte[(int) fileSize];
         try (FileInputStream fis = new FileInputStream(file)) {
             fis.read(fileData);
         }
-        
-        // Размер блока: 200 байт (чтобы поместилось в кадр после кодирования)
+
         int blockSize = 200;
         int totalBlocks = (int) Math.ceil((double) fileData.length / blockSize);
-        
-        // Отправляем информацию о файле
+
         String fileInfo = "FILE_START:" + fileName + ":" + totalBlocks + ":" + fileSize;
         sendToNick(toNick, fileInfo);
         Thread.sleep(100);
-        
-        // Отправляем блоки
+
         for (int i = 0; i < totalBlocks; i++) {
             int from = i * blockSize;
             int to = Math.min(from + blockSize, fileData.length);
             byte[] block = new byte[to - from];
             System.arraycopy(fileData, from, block, 0, block.length);
-            
-            // Кодируем блок в Base64 (чтобы безопасно передавать бинарные данные)
+
             String encodedBlock = Base64.getEncoder().encodeToString(block);
             String blockMsg = "FILE_DATA:" + i + ":" + encodedBlock;
             sendToNick(toNick, blockMsg);
-            
-            // Обновляем прогресс
+
             int progress = (int) ((i + 1) * 100 / totalBlocks);
-            systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, 
-                "Progress: " + progress + "% (" + (i + 1) + "/" + totalBlocks + " blocks)"));
-            
-            Thread.sleep(50); // Небольшая задержка, чтобы не забить канал
+            systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
+                    "Progress: " + progress + "% (" + (i + 1) + "/" + totalBlocks + " blocks)"));
+
+            Thread.sleep(50);
         }
-        
-        // Отправляем завершение
+
         sendToNick(toNick, "FILE_END:" + fileName);
         systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "File sent: " + fileName));
     }
-    // ================================================
 
-    // ========== ДОБАВЛЕНО: Приём файла (вызывается из onFrameText) ==========
+    // ========== ПРИЁМ ФАЙЛА ==========
     private void handleFileTransfer(String fromNick, String text) throws IOException {
         if (text.startsWith("FILE_START:")) {
-            // Формат: FILE_START:имя_файла:количество_блоков:размер
             String[] parts = text.split(":");
             if (parts.length >= 4) {
                 String fileName = parts[1];
                 int totalBlocks = Integer.parseInt(parts[2]);
                 long fileSize = Long.parseLong(parts[3]);
-                
+
                 String fullPath = downloadDirectory + File.separator + fileName;
                 FileReceiveState state = new FileReceiveState(fileName, totalBlocks);
                 state.fileStream = new FileOutputStream(fullPath);
                 activeDownloads.put(fromNick, state);
-                
-                systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, 
-                    "Receiving file: " + fileName + " (" + fileSize + " bytes)"));
+
+                systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
+                        "Receiving file: " + fileName + " (" + fileSize + " bytes)"));
             }
         }
         else if (text.startsWith("FILE_DATA:")) {
-            // Формат: FILE_DATA:номер_блока:данные_base64
             String[] parts = text.split(":", 3);
             if (parts.length >= 3) {
                 int blockNum = Integer.parseInt(parts[1]);
                 byte[] blockData = Base64.getDecoder().decode(parts[2]);
-                
+
                 FileReceiveState state = activeDownloads.get(fromNick);
                 if (state != null && state.fileStream != null) {
                     state.fileStream.write(blockData);
                     state.receivedBlocks++;
-                    
+
                     int progress = (state.receivedBlocks * 100) / state.expectedBlocks;
                     if (progress % 10 == 0 || state.receivedBlocks == state.expectedBlocks) {
-                        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, 
-                            "Receiving progress: " + progress + "%"));
+                        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
+                                "Receiving progress: " + progress + "%"));
                     }
                 }
             }
         }
         else if (text.startsWith("FILE_END:")) {
-            // Формат: FILE_END:имя_файла
             String[] parts = text.split(":");
             String fileName = parts.length > 1 ? parts[1] : "unknown";
-            
+
             FileReceiveState state = activeDownloads.remove(fromNick);
             if (state != null && state.fileStream != null) {
                 state.fileStream.close();
-                systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, 
-                    "File saved: " + downloadDirectory + File.separator + fileName));
+                systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
+                        "File saved: " + downloadDirectory + File.separator + fileName));
             }
         }
     }
-    // ====================================================
 
     public void sendBroadcast(String text) {
         outgoingQueue.offer(new AppMessage("*", myNick, text));
@@ -190,21 +175,20 @@ public class ChatApplicationLayer {
 
     public void updateUsers(Map<Integer, String> users) {
         this.users = users;
+        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "Users table updated: " + users));
     }
 
     public void onFrameText(String fromName, int fromAddr, String text) {
-        // Проверяем, не является ли сообщение частью файловой передачи
         if (text.startsWith("FILE_START:") || text.startsWith("FILE_DATA:") || text.startsWith("FILE_END:")) {
             try {
                 handleFileTransfer(fromName, text);
             } catch (IOException e) {
-                systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT, 
-                    "File receive error: " + e.getMessage()));
+                systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT,
+                        "File receive error: " + e.getMessage()));
             }
             return;
         }
-        
-        // Обычное текстовое сообщение
+
         try {
             AppMessage m = AppCodec.decode(text.getBytes(StandardCharsets.UTF_8));
             incomingQueue.offer(m);
@@ -246,9 +230,14 @@ public class ChatApplicationLayer {
 
     private Integer findAddrByNick(String nick) {
         Map<Integer, String> u = this.users;
-        if (u == null) return null;
+        if (u == null) {
+            systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "DEBUG: users map is null"));
+            return null;
+        }
         for (Map.Entry<Integer, String> e : u.entrySet()) {
-            if (e.getValue() != null && e.getValue().equalsIgnoreCase(nick)) return e.getKey();
+            if (e.getValue() != null && e.getValue().equalsIgnoreCase(nick)) {
+                return e.getKey();
+            }
         }
         return null;
     }
