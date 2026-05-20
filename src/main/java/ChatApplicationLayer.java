@@ -50,7 +50,7 @@ public class ChatApplicationLayer {
         txThread = new Thread(this::txLoop, "APP-TX");
         txThread.setDaemon(true);
         txThread.start();
-        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "Application layer started"));
+        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "Start"));
     }
 
     public void stop() {

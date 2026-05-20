@@ -26,6 +26,8 @@ public class ChatGUI {
     private boolean connected = false;
     private List<String> history = Collections.synchronizedList(new ArrayList<>());
     private boolean isClosing = false;
+    private AppLogger logger;
+
     private Map<Integer, String> currentUsers = new HashMap<>();
 
     private String portName;
@@ -42,7 +44,9 @@ public class ChatGUI {
         this.baudRate = baud;
         this.dataBits = dataBits;
         this.parity = parity;
-
+        logger = new AppLogger("config.ini");
+        logger.saveConfig(portName, addr, nick, baud, dataBits, parity, "./downloads/");
+        logger.logSys("SESSION START nick=" + nick + " addr=" + addr);
         try {
             int parityCode;
             switch (parity) {
@@ -75,7 +79,9 @@ public class ChatGUI {
                         public void onSystem(String text) {
                             SwingUtilities.invokeLater(() -> {
                                 if (chatArea != null) {
-                                    chatArea.append(now() + " [SYS] " + text + "\n");
+                                  //  chatArea.append(now() + " [SYS] " + text + "\n");
+                                    logger.logSys(text);
+
                                 }
                             });
                         }
@@ -92,6 +98,7 @@ public class ChatGUI {
                             SwingUtilities.invokeLater(() -> {
                                 if (chatArea != null) {
                                     chatArea.append(now() + " [SYS] ОТКЛЮЧЕНИЕ\n");
+                                    logger.logConnectionLost("Remote disconnected");
                                 }
                             });
                         }
@@ -114,6 +121,8 @@ public class ChatGUI {
                         AppMessage msg = appLayer.incomingQueue.take();
                         String line = now() + " " + msg.fromNick + ": " + msg.text;
                         history.add(line);
+                        logger.logMsgIn(msg.fromNick, myNick, msg.text);
+
                         SwingUtilities.invokeLater(() -> {
                             if (chatArea != null) {
                                 chatArea.append(line + "\n");
@@ -131,6 +140,10 @@ public class ChatGUI {
                         SystemPacket pkt = appLayer.systemQueue.take();
                         String line = now() + " [SYS] " + pkt.info;
                         history.add(line);
+                        if (pkt.info.contains("File sent:")) logger.logFileSent("?", pkt.info);
+                        else if (pkt.info.contains("File saved:")) logger.logFileReceived("?", pkt.info, pkt.info);
+                        else if (pkt.info.contains("Progress:") || pkt.info.contains("Receiving progress:")) logger.log("[FILE] " + pkt.info);
+                        else logger.logSys(pkt.info);
                         SwingUtilities.invokeLater(() -> {
                             if (chatArea != null) {
                                 chatArea.append(line + "\n");
@@ -456,6 +469,7 @@ public class ChatGUI {
     private void sendBroadcast(String text) {
         String self = now() + " " + myNick + ": " + text;
         history.add(self);
+        logger.logMsgOut(myNick, "ALL", text);
         if (chatArea != null) chatArea.append(self + "\n");
         if (appLayer != null) appLayer.sendBroadcast(text);
     }
@@ -463,6 +477,8 @@ public class ChatGUI {
     private void sendToNick(String toNick, String text) {
         String self = now() + " " + myNick + " [to " + toNick + "]: " + text;
         history.add(self);
+        logger.logMsgOut(myNick, toNick, text);
+
         if (chatArea != null) chatArea.append(self + "\n");
         if (appLayer != null) appLayer.sendToNick(toNick, text);
     }
@@ -481,7 +497,7 @@ public class ChatGUI {
         if (!connected || dll == null) return;
         try {
             dll.sendUplink();
-            chatArea.append(now() + " [SYS] UPLINK ОТПРАВЛЕН, ОТКЛЮЧЕНИЕ...\n");
+         //   chatArea.append(now() + " [SYS] UPLINK ОТПРАВЛЕН, ОТКЛЮЧЕНИЕ...\n");
         } catch (IOException e) {
             chatArea.append(now() + " [SYS] ОШИБКА: " + e.getMessage() + "\n");
         }
@@ -508,6 +524,8 @@ public class ChatGUI {
             try {
                 appLayer.sendFile(toNick, file.getAbsolutePath());
                 chatArea.append(now() + " [SYS] ОТПРАВКА ФАЙЛА: " + file.getName() + " -> " + toNick + "\n");
+                logger.logFileSendStart(myNick, toNick, file.getName(), file.length());
+
             } catch (Exception e) {
                 chatArea.append(now() + " [SYS] ОШИБКА: " + e.getMessage() + "\n");
             }
@@ -518,7 +536,9 @@ public class ChatGUI {
         if (!connected || appLayer == null) return;
         downloadDirField.setText(dir);
         appLayer.setDownloadDirectory(dir);
-        chatArea.append(now() + " [SYS] ПАПКА ЗАГРУЗОК: " + dir + "\n");
+       // chatArea.append(now() + " [SYS] ПАПКА ЗАГРУЗОК: " + dir + "\n");
+        logger.saveConfig(portName, myAddr, myNick, baudRate, dataBits, parity, dir);
+
     }
 
     private void changeDownloadDir() {
@@ -592,7 +612,10 @@ public class ChatGUI {
             if (phy != null) { try { phy.close(); } catch (Exception ignored) {} }
         }
         if (frame != null) frame.dispose();
+        logger.logPortClosed(portName);
+        logger.close();
         System.exit(0);
+
     }
 
     private static String now() {

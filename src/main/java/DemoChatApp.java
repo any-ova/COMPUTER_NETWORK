@@ -54,6 +54,9 @@ public class DemoChatApp {
         }
 
         List<String> history = Collections.synchronizedList(new ArrayList<>());
+        AppLogger logger = new AppLogger("config.ini");
+        logger.saveConfig(portName, myAddr, nick, 9600, 8, "NONE", "./downloads/");
+        logger.logSys("SESSION START nick=" + nick + " addr=" + myAddr);
 
         SerialPhysicalLayer phy = new SerialPhysicalLayer(SerialConfig.defaults(portName));
         phy.open();
@@ -82,6 +85,8 @@ public class DemoChatApp {
                     public void onSystem(String text) {
                         String line = now() + " SYSTEM> " + text;
                         history.add(line);
+                        logger.logSys(text);
+
                         System.out.print("\n" + line + "\n> ");
                         if (appLayerRef[0] != null) {
                             appLayerRef[0].onSystemText(text);
@@ -123,6 +128,8 @@ public class DemoChatApp {
                     // НЕ ОЧИЩАЕМ ТЕКСТ!
                     String line = now() + " " + msg.fromNick + ": " + msg.text;
                     history.add(line);
+                    logger.logMsgIn(msg.fromNick, nick, msg.text);
+
                     System.out.print("\n" + line + "\n> ");
                 } catch (InterruptedException e) {
                     break;
@@ -140,6 +147,8 @@ public class DemoChatApp {
                     if (!pkt.info.contains("Users updated")) { // Не дублируем обновление пользователей
                         String line = now() + " [SYS] " + pkt.info;
                         history.add(line);
+                        logger.log("[SYS] " + pkt.info);
+
                         System.out.print("\n" + line + "\n> ");
                     }
                 } catch (InterruptedException e) {
@@ -248,6 +257,8 @@ public class DemoChatApp {
                 String text = line.substring(5);
                 String self = now() + " " + nick + ": " + text;
                 history.add(self);
+                logger.logMsgOut(nick, "ALL", text);
+
                 System.out.println(self);
                 appLayer.sendBroadcast(text);
                 continue;
@@ -264,6 +275,8 @@ public class DemoChatApp {
 
                 String self = now() + " " + nick + " [to " + toNick + "]: " + text;
                 history.add(self);
+                logger.logMsgOut(nick, toNick, text);
+
                 System.out.println(self);
 
                 appLayer.sendToNick(toNick, text);
@@ -281,6 +294,8 @@ public class DemoChatApp {
         appLayer.stop();
         dll.stop();
         phy.close();
+        logger.logPortClosed(portName);
+        logger.close();
         System.out.println("Bye.");
     }
 }
