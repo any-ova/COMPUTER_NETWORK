@@ -115,13 +115,13 @@ public class DemoChatApp {
         appLayer.start();
 
         // Запускаем поток для обработки входящих сообщений из очереди прикладного уровня
+        // Запускаем поток для обработки входящих сообщений из очереди прикладного уровня
         Thread messageDisplayThread = new Thread(() -> {
             while (true) {
                 try {
                     AppMessage msg = appLayer.incomingQueue.take();
-                    // Очищаем текст от управляющих символов
-                    String cleanText = msg.text.replaceAll("[\\x00-\\x1F\\x7F]", "").trim();
-                    String line = now() + " " + msg.fromNick + ": " + cleanText;
+                    // НЕ ОЧИЩАЕМ ТЕКСТ!
+                    String line = now() + " " + msg.fromNick + ": " + msg.text;
                     history.add(line);
                     System.out.print("\n" + line + "\n> ");
                 } catch (InterruptedException e) {

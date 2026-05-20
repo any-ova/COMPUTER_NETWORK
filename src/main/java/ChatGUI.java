@@ -1,5 +1,4 @@
 import javax.swing.*;
-import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
@@ -27,11 +26,14 @@ public class ChatGUI {
     private boolean connected = false;
     private List<String> history = Collections.synchronizedList(new ArrayList<>());
     private boolean isClosing = false;
+    private Map<Integer, String> currentUsers = new HashMap<>();
 
     private String portName;
     private int baudRate;
     private int dataBits;
     private String parity;
+
+    public ChatGUI() {}
 
     public void startWithParams(String portName, int addr, String nick, int baud, int dataBits, String parity) {
         this.myNick = nick;
@@ -42,46 +44,55 @@ public class ChatGUI {
         this.parity = parity;
 
         try {
+            int parityCode;
+            switch (parity) {
+                case "EVEN": parityCode = SerialPhysicalLayer.PARITY_EVEN; break;
+                case "ODD": parityCode = SerialPhysicalLayer.PARITY_ODD; break;
+                default: parityCode = SerialPhysicalLayer.PARITY_NONE;
+            }
+
             SerialConfig serialConfig = new SerialConfig(
-                    portName, baud, dataBits, 1,
-                    parity.equals("EVEN") ? SerialPhysicalLayer.PARITY_EVEN :
-                            (parity.equals("ODD") ? SerialPhysicalLayer.PARITY_ODD : SerialPhysicalLayer.PARITY_NONE),
+                    portName, baud, dataBits, 1, parityCode,
                     SerialPhysicalLayer.FLOW_NONE, true, true
             );
 
             phy = new SerialPhysicalLayer(serialConfig);
             phy.open();
 
-            final Map<Integer, String>[] usersRef = new Map[]{new HashMap<>()};
             final ChatApplicationLayer[] appLayerRef = new ChatApplicationLayer[1];
 
             dll = new DataLinkLayer(
                     phy.getInputStream(), phy.getOutputStream(), addr, nick,
                     new DataLinkLayer.Callbacks() {
-                        @Override public void onChat(String fromName, int fromAddr, String text) {
-                            String cleanText = text.replace('\u001F', ' ');
-                            String line = now() + " " + fromName + " (" + fromAddr + ")> " + cleanText;
-                            history.add(line);
+                        @Override
+                        public void onChat(String fromName, int fromAddr, String text) {
+                            if (appLayerRef[0] != null) {
+                                appLayerRef[0].onFrameText(fromName, fromAddr, text);
+                            }
+                        }
+
+                        @Override
+                        public void onSystem(String text) {
                             SwingUtilities.invokeLater(() -> {
                                 if (chatArea != null) {
-                                    chatArea.append(line + "\n");
-                                    chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                                    chatArea.append(now() + " [SYS] " + text + "\n");
                                 }
                             });
                         }
-                        @Override public void onSystem(String text) {
-                            SwingUtilities.invokeLater(() -> {
-                                if (chatArea != null) chatArea.append(now() + " [SYS] " + text + "\n");
-                            });
+
+                        @Override
+                        public void onUsers(Map<Integer, String> users) {
+                            currentUsers = new HashMap<>(users);
+                            if (appLayerRef[0] != null) appLayerRef[0].updateUsers(users);
+                            SwingUtilities.invokeLater(() -> updateUserList(users));
                         }
-                        @Override public void onUsers(Map<Integer, String> users) {
-                            usersRef[0] = new HashMap<>(users);
-                            if (appLayerRef[0] != null) appLayerRef[0].updateUsers(usersRef[0]);
-                            SwingUtilities.invokeLater(() -> updateUserList(usersRef[0]));
-                        }
-                        @Override public void onDisconnected() {
+
+                        @Override
+                        public void onDisconnected() {
                             SwingUtilities.invokeLater(() -> {
-                                if (chatArea != null) chatArea.append(now() + " [SYS] ОТКЛЮЧЕНИЕ\n");
+                                if (chatArea != null) {
+                                    chatArea.append(now() + " [SYS] ОТКЛЮЧЕНИЕ\n");
+                                }
                             });
                         }
                     }
@@ -92,13 +103,16 @@ public class ChatGUI {
             appLayerRef[0] = appLayer;
             appLayer.start();
             connected = true;
+            appLayer.setDownloadDirectory("./downloads/");
+
             createAndShowGUI();
 
+            // Поток для входящих сообщений
             new Thread(() -> {
                 while (connected) {
                     try {
                         AppMessage msg = appLayer.incomingQueue.take();
-                        String line = now() + " " + msg.fromNick + "> " + msg.text;
+                        String line = now() + " " + msg.fromNick + ": " + msg.text;
                         history.add(line);
                         SwingUtilities.invokeLater(() -> {
                             if (chatArea != null) {
@@ -110,6 +124,7 @@ public class ChatGUI {
                 }
             }).start();
 
+            // Поток для системных сообщений
             new Thread(() -> {
                 while (connected) {
                     try {
@@ -160,7 +175,27 @@ public class ChatGUI {
         mainPanel.setBackground(ChatTheme.BG_DARK);
         mainPanel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
-        // ===== ЛЕВАЯ ПАНЕЛЬ =====
+        JPanel leftPanel = createLeftPanel();
+        JPanel centerPanel = createCenterPanel();
+        JPanel bottomPanel = createBottomPanel();
+        centerPanel.add(bottomPanel, BorderLayout.SOUTH);
+
+        mainPanel.add(leftPanel, BorderLayout.WEST);
+        mainPanel.add(centerPanel, BorderLayout.CENTER);
+
+        frame.setContentPane(mainPanel);
+        frame.setVisible(true);
+
+        chatArea.append("════════════════════════════════════════════════════\n");
+        chatArea.append("UMBRELLA CORPORATION ТЕРМИНАЛ v.2.0\n");
+        chatArea.append("ПОЛЬЗОВАТЕЛЬ: " + myNick + " [АДР:" + myAddr + "]\n");
+        chatArea.append("ПОРТ: " + portName + " | " + baudRate + " бод | " + dataBits + " бит | " + parity + " | СТОП:1\n");
+        chatArea.append("ПАПКА ЗАГРУЗОК: " + downloadDirField.getText() + "\n");
+        chatArea.append("════════════════════════════════════════════════════\n");
+        showHelp();
+    }
+
+    private JPanel createLeftPanel() {
         JPanel leftPanel = ChatTheme.createGlassPanel();
         leftPanel.setLayout(new BoxLayout(leftPanel, BoxLayout.Y_AXIS));
         leftPanel.setPreferredSize(new Dimension(300, 0));
@@ -194,30 +229,11 @@ public class ChatGUI {
         portPanel.setOpaque(false);
         portPanel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-        JLabel portLabel = new JLabel("ПОРТ: " + portName);
-        portLabel.setFont(ChatTheme.retroFont);
-        portLabel.setForeground(ChatTheme.TEXT_LIGHT);
-        portPanel.add(portLabel);
-
-        JLabel baudLabel = new JLabel("СКОРОСТЬ: " + baudRate + " бод");
-        baudLabel.setFont(ChatTheme.retroFont);
-        baudLabel.setForeground(ChatTheme.TEXT_LIGHT);
-        portPanel.add(baudLabel);
-
-        JLabel dataLabel = new JLabel("БИТЫ ДАННЫХ: " + dataBits);
-        dataLabel.setFont(ChatTheme.retroFont);
-        dataLabel.setForeground(ChatTheme.TEXT_LIGHT);
-        portPanel.add(dataLabel);
-
-        JLabel parityLabel = new JLabel("ЧЁТНОСТЬ: " + parity);
-        parityLabel.setFont(ChatTheme.retroFont);
-        parityLabel.setForeground(ChatTheme.TEXT_LIGHT);
-        portPanel.add(parityLabel);
-
-        JLabel stopLabel = new JLabel("СТОП-БИТЫ: 1");
-        stopLabel.setFont(ChatTheme.retroFont);
-        stopLabel.setForeground(ChatTheme.TEXT_LIGHT);
-        portPanel.add(stopLabel);
+        portPanel.add(createInfoLabel("ПОРТ: " + portName));
+        portPanel.add(createInfoLabel("СКОРОСТЬ: " + baudRate + " бод"));
+        portPanel.add(createInfoLabel("БИТЫ ДАННЫХ: " + dataBits));
+        portPanel.add(createInfoLabel("ЧЁТНОСТЬ: " + parity));
+        portPanel.add(createInfoLabel("СТОП-БИТЫ: 1"));
 
         leftPanel.add(portPanel);
         leftPanel.add(Box.createVerticalStrut(18));
@@ -273,11 +289,22 @@ public class ChatGUI {
 
         JButton fileBtn = ChatTheme.createStyledButton("ОТПРАВИТЬ ФАЙЛ");
         fileBtn.setAlignmentX(Component.CENTER_ALIGNMENT);
-        fileBtn.addActionListener(e -> sendFile());
+        fileBtn.addActionListener(e -> sendFileDialog());
         leftPanel.add(fileBtn);
         leftPanel.add(Box.createVerticalGlue());
 
-        // ===== ЦЕНТРАЛЬНАЯ ПАНЕЛЬ (УЖЕ) =====
+        return leftPanel;
+    }
+
+    private JLabel createInfoLabel(String text) {
+        JLabel label = new JLabel(text);
+        label.setFont(ChatTheme.retroFont);
+        label.setForeground(ChatTheme.TEXT_LIGHT);
+        label.setAlignmentX(Component.CENTER_ALIGNMENT);
+        return label;
+    }
+
+    private JPanel createCenterPanel() {
         JPanel centerPanel = ChatTheme.createGlassPanel();
         centerPanel.setLayout(new BorderLayout(8, 8));
 
@@ -292,7 +319,10 @@ public class ChatGUI {
         chatScroll.setBorder(BorderFactory.createEmptyBorder());
         centerPanel.add(chatScroll, BorderLayout.CENTER);
 
-        // ===== НИЖНЯЯ ПАНЕЛЬ =====
+        return centerPanel;
+    }
+
+    private JPanel createBottomPanel() {
         JPanel bottomPanel = ChatTheme.createGlassPanel();
         bottomPanel.setLayout(new BorderLayout(8, 8));
         bottomPanel.setPreferredSize(new Dimension(0, 80));
@@ -306,54 +336,132 @@ public class ChatGUI {
         inputSubPanel.add(recipientCombo, BorderLayout.WEST);
 
         inputField = ChatTheme.createStyledTextField();
-        inputField.addActionListener(e -> sendMessage());
+        inputField.addActionListener(e -> processInput());
         inputSubPanel.add(inputField, BorderLayout.CENTER);
 
         JButton sendBtn = ChatTheme.createStyledButton("ОТПРАВИТЬ");
-        sendBtn.addActionListener(e -> sendMessage());
+        sendBtn.addActionListener(e -> processInput());
         inputSubPanel.add(sendBtn, BorderLayout.EAST);
 
         bottomPanel.add(inputSubPanel, BorderLayout.CENTER);
-        centerPanel.add(bottomPanel, BorderLayout.SOUTH);
 
-        mainPanel.add(leftPanel, BorderLayout.WEST);
-        mainPanel.add(centerPanel, BorderLayout.CENTER);
-
-        frame.setContentPane(mainPanel);
-        frame.setVisible(true);
-
-        chatArea.append("════════════════════════════════════════════════════\n");
-        chatArea.append("UMBRELLA CORPORATION ТЕРМИНАЛ v.2.0\n");
-        chatArea.append("ПОЛЬЗОВАТЕЛЬ: " + myNick + " [АДР:" + myAddr + "]\n");
-        chatArea.append("ПОРТ: " + portName + " | " + baudRate + " бод | " + dataBits + " бит | " + parity + " | СТОП:1\n");
-        chatArea.append("ПАПКА ЗАГРУЗОК: " + downloadDirField.getText() + "\n");
-        chatArea.append("════════════════════════════════════════════════════\n\n");
+        return bottomPanel;
     }
 
-    private void sendMessage() {
+    private void processInput() {
         if (!connected || inputField == null) return;
         String text = inputField.getText().trim();
         if (text.isEmpty()) return;
         inputField.setText("");
 
+        // === ВСЕ КОМАНДЫ ===
+
+        // 1. /to <ник> <текст> - приватное сообщение
+        if (text.startsWith("/to ")) {
+            String[] parts = text.split("\\s+", 3);
+            if (parts.length >= 3) {
+                sendToNick(parts[1], parts[2]);
+            } else {
+                chatArea.append(now() + " [SYS] Использование: /to <ник> <сообщение>\n");
+            }
+            return;
+        }
+
+        // 2. /sendfile <ник> <путь> - отправить файл
+        if (text.startsWith("/sendfile ")) {
+            String[] parts = text.split("\\s+", 3);
+            if (parts.length >= 3) {
+                String filePath = parts[2].replaceAll("^\"|\"$", "");
+                sendFileCommand(parts[1], filePath);
+            } else {
+                chatArea.append(now() + " [SYS] Использование: /sendfile <ник> <путь_к_файлу>\n");
+            }
+            return;
+        }
+
+        // 3. /downloaddir <путь> - установить папку загрузок
+        if (text.startsWith("/downloaddir ")) {
+            String dir = text.substring(13).trim();
+            changeDownloadDirCommand(dir);
+            return;
+        }
+
+        // 4. /link - отправить LINK
+        if (text.equalsIgnoreCase("/link")) {
+            sendLink();
+            return;
+        }
+
+        // 5. /users - показать пользователей
+        if (text.equalsIgnoreCase("/users")) {
+            chatArea.append(now() + " [SYS] Пользователи: " + currentUsers + "\n");
+            return;
+        }
+
+        // 6. /all <текст> - broadcast
+        if (text.startsWith("/all ")) {
+            String msg = text.substring(5).trim();
+            sendBroadcast(msg);
+            return;
+        }
+
+        // 7. /history show - показать историю
+        if (text.equalsIgnoreCase("/history show")) {
+            showHistory();
+            return;
+        }
+
+        // 8. /history clear - очистить историю
+        if (text.equalsIgnoreCase("/history clear")) {
+            clearHistory();
+            return;
+        }
+
+        // 9. /history save <файл> - сохранить историю
+        if (text.startsWith("/history save ")) {
+            String filePath = text.substring(14).trim();
+            saveHistoryToFile(filePath);
+            return;
+        }
+
+        // 10. /disconnect - отправить UPLINK
+        if (text.equalsIgnoreCase("/disconnect")) {
+            sendUplink();
+            return;
+        }
+
+        // 11. /help - справка
+        if (text.equalsIgnoreCase("/help")) {
+            showHelp();
+            return;
+        }
+
+        // 12. /exit - выход
+        if (text.equalsIgnoreCase("/exit")) {
+            disconnect();
+            return;
+        }
+
+        // Обычное сообщение
         String recipient = recipientCombo != null ? (String) recipientCombo.getSelectedItem() : null;
-        if (recipient != null && !recipient.equals("ВСЕМ (broadcast)") && !recipient.equals("ВСЕМ (broadcast)")) {
+        if (recipient != null && !recipient.equals("ВСЕМ (broadcast)")) {
             sendToNick(recipient, text);
         } else {
             sendBroadcast(text);
         }
+
         if (chatArea != null) chatArea.setCaretPosition(chatArea.getDocument().getLength());
     }
 
     private void sendBroadcast(String text) {
-        String self = now() + " " + myNick + " [" + myAddr + "] > " + text;
+        String self = now() + " " + myNick + ": " + text;
         history.add(self);
         if (chatArea != null) chatArea.append(self + "\n");
         if (appLayer != null) appLayer.sendBroadcast(text);
     }
 
     private void sendToNick(String toNick, String text) {
-        String self = now() + " " + myNick + " [" + myAddr + "] -> " + toNick + " > " + text;
+        String self = now() + " " + myNick + " [to " + toNick + "]: " + text;
         history.add(self);
         if (chatArea != null) chatArea.append(self + "\n");
         if (appLayer != null) appLayer.sendToNick(toNick, text);
@@ -369,7 +477,26 @@ public class ChatGUI {
         }
     }
 
-    private void sendFile() {
+    private void sendUplink() {
+        if (!connected || dll == null) return;
+        try {
+            dll.sendUplink();
+            chatArea.append(now() + " [SYS] UPLINK ОТПРАВЛЕН, ОТКЛЮЧЕНИЕ...\n");
+        } catch (IOException e) {
+            chatArea.append(now() + " [SYS] ОШИБКА: " + e.getMessage() + "\n");
+        }
+    }
+
+    private void sendFileCommand(String toNick, String filePath) {
+        if (!connected || appLayer == null) return;
+        try {
+            appLayer.sendFile(toNick, filePath);
+        } catch (Exception e) {
+            chatArea.append(now() + " [SYS] Ошибка: " + e.getMessage() + "\n");
+        }
+    }
+
+    private void sendFileDialog() {
         if (!connected || appLayer == null) return;
         String toNick = JOptionPane.showInputDialog(frame, "КОМУ ОТПРАВИТЬ ФАЙЛ:");
         if (toNick == null || toNick.trim().isEmpty()) return;
@@ -380,11 +507,18 @@ public class ChatGUI {
             File file = fileChooser.getSelectedFile();
             try {
                 appLayer.sendFile(toNick, file.getAbsolutePath());
-                if (chatArea != null) chatArea.append(now() + " [SYS] ОТПРАВКА ФАЙЛА: " + file.getName() + " -> " + toNick + "\n");
+                chatArea.append(now() + " [SYS] ОТПРАВКА ФАЙЛА: " + file.getName() + " -> " + toNick + "\n");
             } catch (Exception e) {
-                if (chatArea != null) chatArea.append(now() + " [SYS] ОШИБКА ОТПРАВКИ ФАЙЛА\n");
+                chatArea.append(now() + " [SYS] ОШИБКА: " + e.getMessage() + "\n");
             }
         }
+    }
+
+    private void changeDownloadDirCommand(String dir) {
+        if (!connected || appLayer == null) return;
+        downloadDirField.setText(dir);
+        appLayer.setDownloadDirectory(dir);
+        chatArea.append(now() + " [SYS] ПАПКА ЗАГРУЗОК: " + dir + "\n");
     }
 
     private void changeDownloadDir() {
@@ -394,10 +528,58 @@ public class ChatGUI {
         dirChooser.setDialogTitle("ВЫБЕРИТЕ ПАПКУ ДЛЯ ЗАГРУЗОК");
         if (dirChooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
             String dir = dirChooser.getSelectedFile().getAbsolutePath();
-            downloadDirField.setText(dir);
-            appLayer.setDownloadDirectory(dir);
-            if (chatArea != null) chatArea.append(now() + " [SYS] ПАПКА ЗАГРУЗОК: " + dir + "\n");
+            changeDownloadDirCommand(dir);
         }
+    }
+
+    private void showHistory() {
+        if (history.isEmpty()) {
+            chatArea.append(now() + " [SYS] История пуста\n");
+            return;
+        }
+        chatArea.append(now() + " [SYS] === ИСТОРИЯ (" + history.size() + ") ===\n");
+        List<String> historyCopy = new ArrayList<>(history);
+        for (String h : historyCopy) {
+            chatArea.append(h + "\n");
+        }
+        chatArea.append(now() + " [SYS] === КОНЕЦ ИСТОРИИ ===\n");
+    }
+
+    private void clearHistory() {
+        history.clear();
+        chatArea.append(now() + " [SYS] История очищена\n");
+    }
+
+    private void saveHistoryToFile(String filePath) {
+        try (FileWriter fw = new FileWriter(filePath, false)) {
+            for (String h : history) {
+                fw.write(h + "\n");
+            }
+            chatArea.append(now() + " [SYS] История сохранена в: " + filePath + "\n");
+        } catch (IOException e) {
+            chatArea.append(now() + " [SYS] Ошибка сохранения: " + e.getMessage() + "\n");
+        }
+    }
+
+    private void showHelp() {
+        chatArea.append("\n" +
+                "════════════════════════════════════════════════════\n" +
+                "КОМАНДЫ:\n" +
+                "  /link                     - отправить LINK (обновить список пользователей)\n" +
+                "  /users                    - показать известных пользователей\n" +
+                "  /all <текст>              - broadcast сообщение\n" +
+                "  /to <ник> <текст>         - приватное сообщение\n" +
+                "  /sendfile <ник> <путь>    - отправить файл\n" +
+                "  /downloaddir <путь>       - установить папку для загрузок\n" +
+                "  /history show             - показать историю сообщений\n" +
+                "  /history clear            - очистить историю\n" +
+                "  /history save <файл>      - сохранить историю в файл\n" +
+                "  /disconnect               - отправить UPLINK и разорвать соединение\n" +
+                "  /help                     - показать эту справку\n" +
+                "  /exit                     - выйти из программы\n" +
+                "\n" +
+                "Любой текст без команды отправляется как broadcast\n" +
+                "════════════════════════════════════════════════════\n\n");
     }
 
     private void disconnect() {

@@ -83,6 +83,12 @@ public class ChatApplicationLayer {
             return;
         }
 
+        Integer addr = findAddrByNick(toNick);
+        if (addr == null) {
+            systemQueue.offer(new SystemPacket(SystemEventId.NO_ACK, "Unknown user: " + toNick));
+            return;
+        }
+
         String fileName = file.getName();
         long fileSize = file.length();
         systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
@@ -93,11 +99,10 @@ public class ChatApplicationLayer {
             fis.read(fileData);
         }
 
-        int blockSize = 200;
+        int blockSize = 120;
         int totalBlocks = (int) Math.ceil((double) fileData.length / blockSize);
 
-        String fileInfo = "FILE_START:" + fileName + ":" + totalBlocks + ":" + fileSize;
-        sendToNick(toNick, fileInfo);
+        dll.sendChatTo(addr, "FILE_START:" + fileName + ":" + totalBlocks + ":" + fileSize);
         Thread.sleep(100);
 
         for (int i = 0; i < totalBlocks; i++) {
@@ -107,17 +112,15 @@ public class ChatApplicationLayer {
             System.arraycopy(fileData, from, block, 0, block.length);
 
             String encodedBlock = Base64.getEncoder().encodeToString(block);
-            String blockMsg = "FILE_DATA:" + i + ":" + encodedBlock;
-            sendToNick(toNick, blockMsg);
+            dll.sendChatTo(addr, "FILE_DATA:" + i + ":" + encodedBlock);
 
             int progress = (int) ((i + 1) * 100 / totalBlocks);
             systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
                     "Progress: " + progress + "% (" + (i + 1) + "/" + totalBlocks + " blocks)"));
-
             Thread.sleep(50);
         }
 
-        sendToNick(toNick, "FILE_END:" + fileName);
+        dll.sendChatTo(addr, "FILE_END:" + fileName);
         systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, "File sent: " + fileName));
     }
 
@@ -130,6 +133,7 @@ public class ChatApplicationLayer {
                 long fileSize = Long.parseLong(parts[3]);
 
                 String fullPath = downloadDirectory + File.separator + fileName;
+                new File(downloadDirectory).mkdirs();
                 FileReceiveState state = new FileReceiveState(fileName, totalBlocks);
                 state.fileStream = new FileOutputStream(fullPath);
                 activeDownloads.put(fromNick, state);
@@ -141,9 +145,7 @@ public class ChatApplicationLayer {
         else if (text.startsWith("FILE_DATA:")) {
             String[] parts = text.split(":", 3);
             if (parts.length >= 3) {
-                int blockNum = Integer.parseInt(parts[1]);
                 byte[] blockData = Base64.getDecoder().decode(parts[2]);
-
                 FileReceiveState state = activeDownloads.get(fromNick);
                 if (state != null && state.fileStream != null) {
                     state.fileStream.write(blockData);
@@ -158,14 +160,11 @@ public class ChatApplicationLayer {
             }
         }
         else if (text.startsWith("FILE_END:")) {
-            String[] parts = text.split(":");
-            String fileName = parts.length > 1 ? parts[1] : "unknown";
-
             FileReceiveState state = activeDownloads.remove(fromNick);
             if (state != null && state.fileStream != null) {
                 state.fileStream.close();
                 systemQueue.offer(new SystemPacket(SystemEventId.CONNECT,
-                        "File saved: " + downloadDirectory + File.separator + fileName));
+                        "File saved: " + downloadDirectory + File.separator + state.fileName));
             }
         }
     }
@@ -179,36 +178,30 @@ public class ChatApplicationLayer {
     }
 
     public void onFrameText(String fromName, int fromAddr, String text) {
+        // Файловые сообщения
         if (text.startsWith("FILE_START:") || text.startsWith("FILE_DATA:") || text.startsWith("FILE_END:")) {
             try {
                 handleFileTransfer(fromName, text);
             } catch (IOException e) {
-                systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT,
-                        "File receive error: " + e.getMessage()));
+                systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT, "File receive error: " + e.getMessage()));
             }
             return;
         }
 
-        try {
-            AppMessage m = AppCodec.decode(text.getBytes(StandardCharsets.UTF_8));
-            incomingQueue.offer(m);
-        } catch (Exception e) {
-            incomingQueue.offer(new AppMessage("*", fromName, text));
-        }
+        // Обычные текстовые сообщения (без AppCodec)
+        incomingQueue.offer(new AppMessage("*", fromName, text));
     }
 
     public void onSystemText(String s) {
-        if (s.contains("ACK received")) systemQueue.offer(new SystemPacket(SystemEventId.ACK, s));
-        else if (s.contains("RX stopped")) systemQueue.offer(new SystemPacket(SystemEventId.DISCONNECT, s));
-        else systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, s));
+        systemQueue.offer(new SystemPacket(SystemEventId.CONNECT, s));
     }
 
     private void txLoop() {
         while (running) {
             try {
                 AppMessage m = outgoingQueue.take();
-                byte[] bytes = AppCodec.encode(m);
-                String data = new String(bytes, StandardCharsets.UTF_8);
+                // Отправляем просто текст (без AppCodec)
+                String data = m.text;
 
                 if (m.toNick.equals("*")) {
                     dll.sendChatBroadcast(data);

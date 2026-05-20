@@ -4,19 +4,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 public class FrameIO {
-    // ИСПРАВЛЕНО: правильные значения по стандарту HDLC
-    public static final int FLAG = 0xFF;        // 126 - start/stop флаг
-    public static final int BROADCAST = 0x7F;   // 127 - широковещательный адрес
-    public static final int ESC = 0x7D;         // 125 - escape символ
+    // Флаг кадра 0xFF (по заданию)
+    public static final int FLAG = 0xFF;
+    public static final int BROADCAST = 0x7F;
+    public static final int ESC = 0x7D;
 
-    // Типы кадров (как в методичке)
     public static final int TYPE_I      = 0x01;
     public static final int TYPE_LINK   = 0x02;
     public static final int TYPE_UPLINK = 0x03;
     public static final int TYPE_ACK    = 0x04;
     public static final int TYPE_RET    = 0x05;
 
-    /** Записать кадр. rawData используется только для I и LINK. */
     public static void writeFrame(OutputStream out, int dst, int src, int type, byte[] rawData) throws IOException {
         out.write(FLAG);
         out.write(dst & 0xFF);
@@ -27,16 +25,9 @@ public class FrameIO {
             if (rawData == null) rawData = new byte[0];
             if (rawData.length > 255) throw new IOException("Data too long: " + rawData.length);
 
-            // 1) [7,4] кодирование полезных данных
             byte[] coded = Code74.encode(rawData);
-
-            // 2) stuffing coded-данных, чтобы FLAG не встретился в середине
             byte[] stuffed = stuff(coded);
-
-            // len в методичке = длина ПОЛЯ ДАННЫХ (оригинальная, до кодирования)
             out.write(rawData.length & 0xFF);
-
-            // поле "Данные" (в методичке) мы передаём как stuffed(coded(rawData))
             out.write(stuffed);
         }
 
@@ -44,38 +35,35 @@ public class FrameIO {
         out.flush();
     }
 
-    /** Прочитать кадр. Возвращаем rawData уже ДЕКОДИРОВАННЫЕ (т.е. исходные данные). */
     public static Frame readFrame(InputStream in) throws IOException {
-        // 1) дождаться стартового FLAG
         int b;
         do {
             b = in.read();
             if (b < 0) throw new IOException("EOF");
         } while ((b & 0xFF) != FLAG);
 
-        // 2) header
         int dst = readByte(in);
         int src = readByte(in);
         int type = readByte(in);
 
         if (!hasData(type)) {
-            // для ACK/RET/UPLINK поля len и data отсутствуют — сразу ждём stop FLAG
             int stop = readByte(in);
-            if (stop != FLAG) throw new IOException("Bad stop byte: expected " + FLAG + ", got " + stop);
+            if (stop != FLAG) throw new IOException("Bad stop byte");
             return new Frame(dst, src, type, new byte[0]);
         }
 
-        // 3) len (raw length)
         int rawLen = readByte(in);
-
-        // 4) читаем stuffed(coded(data)) до стопового FLAG
         byte[] stuffed = readUntilFlag(in);
-
-        // 5) unstuff -> coded
         byte[] coded = unstuff(stuffed);
 
-        // 6) decode [7,4] обратно в raw bytes (длина известна = rawLen)
-        byte[] raw = Code74.decode(coded, rawLen);
+        // Защита от ошибок декодирования
+        byte[] raw;
+        try {
+            raw = Code74.decode(coded, rawLen);
+        } catch (IOException e) {
+            System.err.println("[FrameIO] Decode error: " + e.getMessage());
+            raw = Code74.decodeSafe(coded, rawLen);
+        }
 
         return new Frame(dst, src, type, raw);
     }
@@ -90,21 +78,17 @@ public class FrameIO {
         return b & 0xFF;
     }
 
-    /** Читает байты до следующего FLAG (FLAG не включается). */
     private static byte[] readUntilFlag(InputStream in) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         while (true) {
             int b = in.read();
             if (b < 0) throw new IOException("EOF");
             int x = b & 0xFF;
-            if (x == FLAG) break;      // stop
+            if (x == FLAG) break;
             bos.write(x);
         }
         return bos.toByteArray();
     }
-
-    // --- stuffing только внутри data ---
-    // Правило: после ESC идёт оригинальный байт XOR 0x20 (как в HDLC)
 
     private static byte[] stuff(byte[] data) {
         ByteArrayOutputStream bos = new ByteArrayOutputStream(data.length * 2);
@@ -112,7 +96,7 @@ public class FrameIO {
             int x = bb & 0xFF;
             if (x == FLAG || x == ESC) {
                 bos.write(ESC);
-                bos.write(x ^ 0x20);  // XOR 0x20 как в стандарте HDLC
+                bos.write(x ^ 0x20);
             } else {
                 bos.write(x);
             }
@@ -127,7 +111,6 @@ public class FrameIO {
             if (x == ESC) {
                 if (i + 1 >= stuffed.length) throw new IOException("Bad ESC at end");
                 int y = stuffed[++i] & 0xFF;
-                // Восстанавливаем оригинальный байт: XOR 0x20 обратно
                 bos.write(y ^ 0x20);
             } else {
                 bos.write(x);
